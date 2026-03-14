@@ -1,0 +1,13 @@
+[package]
+name = "video_ingestor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# ML Inference
+ort = { version = "2.0.0-rc.9", features = ["ndarray"] }
+ndarray = "0.15"
+image = "0.25"
+
+# Error handling
+anyhow = "1.0"

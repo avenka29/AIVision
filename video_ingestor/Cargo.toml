@@ -4,10 +4,25 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures-util = "0.3"
+
 # ML Inference
+# od_opencv 0.2.x re-exports opencv and is more stable for YOLOv8
+od_opencv = "0.2.0" 
 ort = { version = "2.0.0-rc.9", features = ["ndarray"] }
 ndarray = "0.15"
 image = "0.25"
 
-# Error handling
+# Media
+livekit = "0.7.33"
+livekit-api = { version = "0.4.15", features = ["services-tokio"] }
+
+# Error handling & logging
 anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+dotenvy = "0.15"
+time = "=0.3.36"

@@ -3,40 +3,73 @@
 ## Purpose
 The `video_ingestor` is a high-performance Rust service responsible for the real-time ingestion, decoding, and analysis of video streams. It acts as the "eyes" of the system.
 
-## Technical Specifications
+## 1. Internal Task Architecture
+The engine is built on an asynchronous, multi-threaded task model using `tokio` to ensure zero-latency processing and isolation.
 
-### 1. Language & Runtime
-*   **Language:** Rust (Safety, Concurrency, Performance).
-*   **Async Runtime:** `tokio` (Handles high-volume IO and network tasks).
+### A. Ingestor Task (The "Receiver")
+*   **Technology:** LiveKit Rust SDK.
+*   **Role:** Maintains a single connection to a LiveKit Room.
+*   **Multi-Track Support:** Dynamically spawns internal pipelines for every `TrackSubscribed` event (supporting multiple cameras/drones).
 
-### 2. Media Pipeline
-*   **WebRTC Stack:** LiveKit (MVP) / `webrtc-rs` (Long-term)
-    *   **MVP:** Use the **LiveKit Rust SDK** to join a room and receive raw `VideoFrame` objects.
-    *   **LiveKit Server:** Acts as the SFU (Selective Forwarding Unit), handling signaling, ICE/STUN/TURN, and adaptive bitrate.
-    *   **Future:** Potential transition to a custom `webrtc-rs` implementation for zero-dependency edge deployments.
-*   **Decoding:** Handled by the LiveKit SDK (internal `libwebrtc` bindings).
-*   **Preprocessing:** Frame resizing and normalization (RGB/BGR) for ML input using the `image` or `ndarray` crates.
+### B. Buffer & Context Task (The "Short-term Memory")
+*   **Mechanism:** `RingBuffer<Arc<VideoFrame>>`.
+*   **Temporal Context:** Maintains a sliding window of the last 10 seconds (adjustable) of raw frames.
+*   **Isolation:** If ML inference slows down, the buffer continues to ingest frames at full FPS without blocking the network.
 
-### 3. ML Inference (Local)
-*   **Engine:** `onnxruntime-rs`
-    *   Cross-platform hardware acceleration (CUDA, CoreML, DirectML).
-*   **Model:** YOLOv8-Nano (Pre-trained on COCO).
-    *   Input size: 640x640.
-    *   Output: Bounding boxes and confidence scores.
+### C. Inference Task (The "Reflexes")
+*   **Engine:** `ort` (ONNX Runtime) with YOLOv8.
+*   **Inference Chain:**
+    *   **Primary:** YOLOv8 (Detects People, Vehicles, etc.).
+    *   **Secondary (Future):** Specialized models (Face, Pose) triggered only on specific object crops.
+*   **Concurrency:** Utilizes GPU/NPU acceleration via CUDA/TensorRT/CoreML providers.
 
-### 4. Logic & Filtering
-*   **Tracking:** Basic "SORT" or centroid tracking to assign unique IDs to detected objects.
-*   **Event Generation:** 
-    *   `TRACK_STARTED`: New unique object appeared.
-    *   `TRACK_LOST`: Object left the scene.
-    *   `HEARTBEAT`: Periodic updates for active objects.
+### D. The gRPC Bridge (The "Nerve")
+*   **Event Dispatcher (Push):** 
+    *   **Main Agent (Python):** Subscribes to a continuous stream of `ObjectDetected` events.
+    *   **Payload:** Includes the latest low-res frame, bounding box, and `TrackID`.
+    *   **Goal:** Provides the "Reflex" path for the Main Agent to decide if a Sub-Agent is needed.
+*   **Context Streamer (Pull/Query):**
+    *   **Sub-Agents (Python):** Spawned by the Main Agent; they "dial back" into the Rust Vision Engine via gRPC.
+    *   **Request:** `GetContextFrames(track_id, duration_ms)`.
+    *   **Payload:** A high-resolution stream of historical frames from the **Sliding Window Buffer**.
+    *   **Goal:** Provides the "Cognitive" path for specialized agents to perform deep temporal analysis (e.g., VLM reasoning, facial verification).
 
-### 5. Communication (gRPC)
-*   **Service Definition:** `vision.proto`
-*   **Role:** The Vision Engine acts as a **gRPC Client** (streaming events to the Brain) and a **gRPC Server** (listening for frame-grab requests from Sub-Agents).
+---
 
-## MVP Milestones
-1.  **Phase 1:** Basic Rust app with gRPC boilerplate.
-2.  **Phase 2:** Integrate `onnxruntime` and run inference on a local file/webcam.
-3.  **Phase 3:** Integrate `webrtc-rs` for remote ingestion.
-4.  **Phase 4:** Implement object tracking and Event Bridge.
+## 2. Refined Data Flow Diagram
+
+```text
+[ LiveKit Media Server ]
+           │
+           ▼ (WebRTC / RTP)
+    ┌──────────────────────┐
+    │    Ingestor Task     │
+    └──────────┬───────────┘
+               │ (Raw Frames / Arc)
+    ┌──────────▼───────────┐      ┌─────────────────────────┐
+    │ Sliding Ring Buffer  │ <─── │   gRPC Context Server   │
+    └──────────┬───────────┘      └───────────▲─────────────┘
+               │ (Latest Frame)               │ (Pull: Context Clips)
+    ┌──────────▼───────────┐                  │
+    │    Inference Task    │      ┌───────────┴─────────────┐
+    │   (YOLOv8 Reflex)    │ ───> │    Agentic Brain (PY)   │
+    └──────────────────────┘      └─────────────────────────┘
+          (Push: Event Stream)
+```
+
+
+---
+
+## 3. Performance & Scaling Strategies
+*   **Zero-Copy Logic:** Uses `Arc<T>` to pass frame pointers between the Buffer and Inference tasks, avoiding expensive memory copies of high-resolution video data.
+*   **Deterministic Latency:** By separating the "Ingestor" from the "Inference," we ensure that network jitters don't crash the ML loop, and ML lag doesn't cause WebRTC packet loss.
+*   **Horizontal Growth:** To add new layers of analysis (e.g., facial recognition), we simply plug a new `SecondaryInference` task into the existing "Proposal" stream from the Primary YOLO task.
+
+---
+
+## 4. MVP Technical Stack
+*   **Runtime:** `tokio` (Async/Await)
+*   **WebRTC:** `livekit-rs`
+*   **Inference:** `ort` (ONNX Runtime)
+*   **Communication:** `tonic` (gRPC / Protobuf)
+*   **Data Structures:** `crossbeam` (Lock-free channels)

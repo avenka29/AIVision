@@ -18,14 +18,30 @@ The system consists of two primary layers connected by a high-speed gRPC bridge:
 
 ---
 
-## 2. Technical Stack
+## 2. Technical Stack & Core Components
 
-| Layer | Component | Technology |
-| :--- | :--- | :--- |
-| **Ingestion** | WebRTC | `webrtc-rs` (Pure Rust) |
-| **Inference** | Local ML | ONNX Runtime + YOLOv8 |
-| **Bridge** | Communication | gRPC (Tonic / Protobuf) |
-| **Brain** | Agentic Framework | Python (LangChain/CrewAI/Custom) |
+### A. The Connection Manager
+*   **Registry:** Manages active WebRTC/LiveKit sessions.
+*   **Scalability:** Designed to handle `N` streams (MVP limited to 1).
+*   **Health Check:** Monitors stream vitals (bitrate, frame-drop) and restarts ingestors on failure.
+
+### B. The Sliding Window Buffer (Temporal Context)
+*   **Mechanism:** A high-performance Ring Buffer (in-memory) storing the last `X` seconds of raw frames.
+*   **Purpose:** Provides "Pre-Event Context" to Agents. When a detection occurs at `T`, the Agent can request frames from `T - 5s` to `T` to analyze intent/behavior.
+*   **Memory Management:** Strictly bounded to prevent OOM (Out of Memory) errors.
+
+### C. The ML Pipeline (Multi-Layered)
+*   **Layer 1 (Reflex):** YOLOv8 runs on every frame for generic object detection.
+*   **Layer 2 (Cognitive):** Specialized models (Face, Pose, LPR) run only on "Proposals" from Layer 1.
+*   **Inference Queue:** A "Latest-Only" queue to ensure zero-latency for live analysis.
+
+---
+
+## 3. System Bootstrap Sequence
+1.  **Service Init:** Initialize gRPC/Messaging bus and Buffer services.
+2.  **ML Warmup:** Load ONNX models into GPU/NPU memory and run a dummy inference pass.
+3.  **Signaling Start:** Open the WebRTC/LiveKit signaling bridge to accept incoming connections.
+4.  **Monitoring:** Start the health-check loop for stream stability.
 
 ---
 
